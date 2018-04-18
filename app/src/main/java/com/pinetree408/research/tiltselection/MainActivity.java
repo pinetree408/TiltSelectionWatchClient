@@ -9,7 +9,7 @@ import android.os.Bundle;
 import android.os.Vibrator;
 import android.support.annotation.Nullable;
 import android.support.wearable.activity.WearableActivity;
-import android.util.Log;
+import android.view.Surface;
 import android.view.View;
 import android.view.WindowManager;
 import android.widget.Button;
@@ -19,6 +19,9 @@ import java.net.URISyntaxException;
 import io.socket.client.IO;
 import io.socket.client.Socket;
 import io.socket.emitter.Emitter;
+
+import java.util.Timer;
+import java.util.TimerTask;
 
 public class MainActivity extends WearableActivity implements SensorEventListener {
 
@@ -34,14 +37,18 @@ public class MainActivity extends WearableActivity implements SensorEventListene
 
     Socket socket;
 
-    String ip = "143.248.197.109";
+    String ip = "143.248.56.249";
     int port = 5000;
 
     float refAngle = 360;
-    float preRefAngle;
-    int count = 0;
+    int tickInterval = 18;
 
     Vibrator vibrator;
+    Timer mTimer;
+    boolean hasStarted = false;
+
+    Button mModeButton;
+    int mode = 1;
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
@@ -63,22 +70,21 @@ public class MainActivity extends WearableActivity implements SensorEventListene
 
             @Override
             public void call(Object... args) {
-                modeFlag = 1;
-                Log.d("Socket", "connect");
+                runOnUiThread(new Runnable() {
+                    @Override
+                    public void run() {
+                        modeFlag = 1;
+                        mButton.setText("Recording");
+                    }
+                });
             }
 
         }).on("response", new Emitter.Listener() {
-
             @Override
             public void call(Object... args) {}
-
         }).on(Socket.EVENT_DISCONNECT, new Emitter.Listener() {
-
             @Override
-            public void call(Object... args) {
-                Log.d("Socket", "disconnect");
-            }
-
+            public void call(Object... args) {}
         });
 
         mButton = findViewById(R.id.recordButton);
@@ -86,13 +92,24 @@ public class MainActivity extends WearableActivity implements SensorEventListene
             public void onClick(View v) {
                 if (modeFlag == 0) {
                     socket.connect();
-                    mButton.setText("Recording");
                 } else {
                     mButton.setText("Ready");
                     modeFlag = 0;
                     finish();
                     System.exit(0);
                 }
+            }
+        });
+
+        mModeButton = findViewById(R.id.modeButton);
+        mModeButton.setOnClickListener(new Button.OnClickListener() {
+            public void onClick(View v) {
+                if (mode == 0) {
+                    mode = 1;
+                } else {
+                    mode = 0;
+                }
+                mModeButton.setText(Integer.toString(mode));
             }
         });
 
@@ -103,6 +120,7 @@ public class MainActivity extends WearableActivity implements SensorEventListene
         mRotate = mSensorManager.getDefaultSensor(Sensor.TYPE_ROTATION_VECTOR);
 
         vibrator = (Vibrator)getSystemService(Context.VIBRATOR_SERVICE);
+        mTimer = new Timer();
     }
 
     @Override
@@ -152,25 +170,105 @@ public class MainActivity extends WearableActivity implements SensorEventListene
         float[] rotationMatrix = new float[9];
         SensorManager.getRotationMatrixFromVector(rotationMatrix, rotationVector);
 
+        final int worldAxisForDeviceAxisX;
+        final int worldAxisForDeviceAxisY;
+
+        // Remap the axes as if the device screen was the instrument panel,
+        // and adjust the rotation matrix for the device orientation.
+        WindowManager wm = (WindowManager)getSystemService(Context.WINDOW_SERVICE);
+        switch (wm.getDefaultDisplay().getRotation()) {
+            case Surface.ROTATION_0:
+            default:
+                worldAxisForDeviceAxisX = SensorManager.AXIS_X;
+                worldAxisForDeviceAxisY = SensorManager.AXIS_Z;
+                break;
+            case Surface.ROTATION_90:
+                worldAxisForDeviceAxisX = SensorManager.AXIS_Z;
+                worldAxisForDeviceAxisY = SensorManager.AXIS_MINUS_X;
+                break;
+            case Surface.ROTATION_180:
+                worldAxisForDeviceAxisX = SensorManager.AXIS_MINUS_X;
+                worldAxisForDeviceAxisY = SensorManager.AXIS_MINUS_Z;
+                break;
+            case Surface.ROTATION_270:
+                worldAxisForDeviceAxisX = SensorManager.AXIS_MINUS_Z;
+                worldAxisForDeviceAxisY = SensorManager.AXIS_X;
+                break;
+        }
+
+        float[] adjustedRotationMatrix = new float[9];
+        SensorManager.remapCoordinateSystem(rotationMatrix, worldAxisForDeviceAxisX,
+                worldAxisForDeviceAxisY, adjustedRotationMatrix);
+
+        float[] remapOrientation = new float[3];
+        SensorManager.getOrientation(adjustedRotationMatrix, remapOrientation);
+        float remapPitch = (float) Math.toDegrees(remapOrientation[1]);
+
         float[] orientation = new float[3];
         SensorManager.getOrientation(rotationMatrix, orientation);
+        final float pitch = (float) Math.toDegrees(orientation[1]);
 
-        float pitch = (float) Math.toDegrees(orientation[1]);
-
-        if (refAngle > 180) {
+        if (refAngle > 180 && modeFlag == 1) {
             refAngle = pitch;
-            preRefAngle = refAngle;
         } else {
-            if (Math.abs(preRefAngle - pitch) > 20) {
-                if (pitch - preRefAngle < 0){
-                    count = count - 1;
-                    socket.emit("tilt", -1);
-                } else {
-                    count = count + 1;
-                    socket.emit("tilt", 1);
+            if (mode == 0) {
+                if (0 <= remapPitch) {
+                    if (-40 < pitch && pitch < 60) {
+                        mTimer.cancel();
+                        vibrator.cancel();
+                        hasStarted = false;
+                        if (Math.abs(refAngle - pitch) > tickInterval) {
+                            int direction = 1;
+                            if (pitch - refAngle < 0){
+                                direction = -1;
+                            }
+                            socket.emit("tilt", direction);
+                            refAngle = pitch;
+                            vibrator.vibrate(100);
+                        }
+                    } else {
+                        if (!hasStarted) {
+                            hasStarted = true;
+                            vibrator.vibrate(
+                                    new long[]{0,50,25,50}
+                                    , -1);
+                            mTimer = new Timer();
+                            mTimer.scheduleAtFixedRate(new TimerTask() {
+                                public void run() {
+                                    int direction = 1;
+                                    if (refAngle < 0){
+                                        direction = -1;
+                                    }
+                                    socket.emit("tilt", direction);
+                                    vibrator.vibrate(100);
+                                }
+                            }, 300, 700);
+                        }
+                    }
                 }
-                preRefAngle = pitch;
-                vibrator.vibrate(100);
+            } else {
+                if (0 <= remapPitch) {
+                    if (-30 < pitch && pitch < 30) {
+                        mTimer.cancel();
+                        vibrator.cancel();
+                        hasStarted = false;
+                    } else {
+                        if (!hasStarted) {
+                            hasStarted = true;
+                            mTimer = new Timer();
+                            mTimer.scheduleAtFixedRate(new TimerTask() {
+                                public void run() {
+                                    int direction = 1;
+                                    if (pitch < 0){
+                                        direction = -1;
+                                    }
+                                    socket.emit("tilt", direction);
+                                    vibrator.vibrate(100);
+                                }
+                            }, 300, 700);
+                        }
+                    }
+                }
             }
         }
     }
