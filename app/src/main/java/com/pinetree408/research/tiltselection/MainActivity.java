@@ -37,7 +37,7 @@ public class MainActivity extends WearableActivity implements SensorEventListene
 
     Socket socket;
 
-    String ip = "143.248.56.249";
+    String ip = "192.168.0.160";
     int port = 5000;
 
     float refAngle = 360;
@@ -48,7 +48,6 @@ public class MainActivity extends WearableActivity implements SensorEventListene
     boolean hasStarted = false;
 
     Button mModeButton;
-    int mode = 1;
 
     @Override
     protected void onCreate(@Nullable Bundle savedInstanceState) {
@@ -98,18 +97,6 @@ public class MainActivity extends WearableActivity implements SensorEventListene
                     finish();
                     System.exit(0);
                 }
-            }
-        });
-
-        mModeButton = findViewById(R.id.modeButton);
-        mModeButton.setOnClickListener(new Button.OnClickListener() {
-            public void onClick(View v) {
-                if (mode == 0) {
-                    mode = 1;
-                } else {
-                    mode = 0;
-                }
-                mModeButton.setText(Integer.toString(mode));
             }
         });
 
@@ -211,62 +198,25 @@ public class MainActivity extends WearableActivity implements SensorEventListene
         if (refAngle > 180 && modeFlag == 1) {
             refAngle = pitch;
         } else {
-            if (mode == 0) {
-                if (0 <= remapPitch) {
-                    if (-40 < pitch && pitch < 60) {
-                        mTimer.cancel();
-                        vibrator.cancel();
-                        hasStarted = false;
-                        if (Math.abs(refAngle - pitch) > tickInterval) {
-                            int direction = 1;
-                            if (pitch - refAngle < 0){
-                                direction = -1;
+            if (0 <= remapPitch) {
+                if (-35 < pitch && pitch < 35) {
+                    mTimer.cancel();
+                    vibrator.cancel();
+                    hasStarted = false;
+                } else {
+                    if (!hasStarted) {
+                        hasStarted = true;
+                        mTimer = new Timer();
+                        mTimer.scheduleAtFixedRate(new TimerTask() {
+                            public void run() {
+                                int direction = 1;
+                                if (pitch < 0){
+                                    direction = -1;
+                                }
+                                socket.emit("tilt", direction);
+                                vibrator.vibrate(100);
                             }
-                            socket.emit("tilt", direction);
-                            refAngle = pitch;
-                            vibrator.vibrate(100);
-                        }
-                    } else {
-                        if (!hasStarted) {
-                            hasStarted = true;
-                            vibrator.vibrate(
-                                    new long[]{0,50,25,50}
-                                    , -1);
-                            mTimer = new Timer();
-                            mTimer.scheduleAtFixedRate(new TimerTask() {
-                                public void run() {
-                                    int direction = 1;
-                                    if (refAngle < 0){
-                                        direction = -1;
-                                    }
-                                    socket.emit("tilt", direction);
-                                    vibrator.vibrate(100);
-                                }
-                            }, 300, 700);
-                        }
-                    }
-                }
-            } else {
-                if (0 <= remapPitch) {
-                    if (-30 < pitch && pitch < 30) {
-                        mTimer.cancel();
-                        vibrator.cancel();
-                        hasStarted = false;
-                    } else {
-                        if (!hasStarted) {
-                            hasStarted = true;
-                            mTimer = new Timer();
-                            mTimer.scheduleAtFixedRate(new TimerTask() {
-                                public void run() {
-                                    int direction = 1;
-                                    if (pitch < 0){
-                                        direction = -1;
-                                    }
-                                    socket.emit("tilt", direction);
-                                    vibrator.vibrate(100);
-                                }
-                            }, 300, 700);
-                        }
+                        }, 300, 500);
                     }
                 }
             }
